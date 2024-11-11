@@ -2,7 +2,7 @@
 
 * [Setup](#setup)
     * [Helpers](#helpers)
-* [First pass](#first-pass)
+* [Data setup](#data-setup)
     * [Initial clustering](#initial-clustering)
     * [Evaluating initial cluster diversity](#evaluating-initial-cluster-diversity)
 * [Maximum-diversity soft-clustering](#maximum-diversity-soft-clustering)
@@ -24,7 +24,9 @@ of the harmony integration method. Mostly for my own (dariober) understanding.
 # Setup 
 
 ```
-mamba install r-harmony r-data.table r-tidyverse r-ggthemes r-ggrepel r-harmony r-patchwork r-tidyr
+mamba create -n harmony-explained
+mamba activate harmony-explained
+mamba install 'r-harmony=1.2.1' r-data.table r-tidyverse r-ggthemes r-ggrepel r-patchwork r-tidyr
 ```
 
 ## Helpers
@@ -34,7 +36,7 @@ cosine_normalize <- function(X, margin) {
     if (margin == 1) {
         res <- sweep(as.matrix(X), 1, sqrt(rowSums(X ^ 2)), '/')
         row.names(res) <- row.names(X)
-        colnames(res) <- colnames(X)        
+        colnames(res) <- colnames(X)
     } else {
         res <- sweep(as.matrix(X), 2, sqrt(colSums(X ^ 2)), '/')
         row.names(res) <- row.names(X)
@@ -48,7 +50,7 @@ onehot <- function(vals) {
 }
 ```
 
-# First pass 
+# Data setup
 
 ```
 library(harmony)
@@ -59,29 +61,29 @@ rownames(V) <- sprintf('cell%04d', 1:nrow(V))
 colnames(V) <- sprintf('PC%02d', 1:ncol(V))
 dim(V)
 V[1:5,]
-       X1       X2      X3     X19      X20
-1  0.0028 -0.00145 -0.0064 ... 1.1e-03  0.00026
-2 -0.0117  0.00088  0.0009     4.1e-04 -0.00171
-3  0.0093 -0.00697 -0.0026     7.4e-05 -0.00066
-4  0.0063 -0.00252 -0.0044     9.3e-04  0.00037
-5  0.0085  0.00709 -0.0023 ... 1.8e-04  0.00048
+            PC01     PC02    PC03        PC19     PC20
+cell0001  0.0028 -0.00145 -0.0064 ... 1.1e-03  0.00026
+cell0002 -0.0117  0.00088  0.0009     4.1e-04 -0.00171
+cell0003  0.0093 -0.00697 -0.0026     7.4e-05 -0.00066
+cell0004  0.0063 -0.00252 -0.0044     9.3e-04  0.00037
+cell0005  0.0085  0.00709 -0.0023 ... 1.8e-04  0.00048
 ```
 
 Map cell to spherical space of radius 1
 
 ```
 V_cos <- cosine_normalize(V, 1)
-stopifnot(sqrt(sum(V_cos[1,]^2)) == 1) # L2 norm is just Pyth theorem sqrt(x^2 + y^2 + ...)
+stopifnot(sqrt(sum(V_cos[1,]^2)) == 1) # L2 norm is just Pythagorean theorem sqrt(x^2 + y^2 + ...)
 
 meta_data <- cell_lines$meta_data
 ```
 
+To get a hang of cosine distance vs euclidean distance see
+(https://stats.stackexchange.com/a/508675/31142)
+
 ## Initial clustering
 
 ```
-km <- kmeans(t(hobj$Z_cos), 5, iter.max=1000)
-cluster_centroids <- t(km$centers) # Does not really match hobj$Y
-
 set.seed(1)
 hobj <- RunHarmony(
     data_mat = V, ## PCA embedding matrix of cells
@@ -96,15 +98,43 @@ hobj <- RunHarmony(
 )
 ```
 
+Using `base::kmeans` we get similar results, but not exactly, depending on the
+seed. Cluster names are arbitrary so they differ.
+
+MEMO: In K-means you first decide the number of clusters you want, then you
+find the cluster centroids that minimise the within cluster sum of squares.
+That is, you assign cells to clusters in such way that the sum of distances
+between cells and the cluster centroid they belong to is smallest.
+
+```
+set.seed(1)
+km <- kmeans(t(hobj$Z_cos), 5)
+cluster_centroids <- t(km$centers)
+cor(hobj$Y, cluster_centroids)
+          1      2      3      4      5
+[1,]  0.800 -0.646 -0.889  1.000 -0.801
+[2,] -0.895  0.841  0.999 -0.884  0.558
+[3,] -0.906  0.999  0.820 -0.640  0.399
+[4,]  1.000 -0.906 -0.895  0.806 -0.704
+[5,] -0.702  0.395  0.572 -0.802  1.000
+```
+
 Probability of each cell to belong to cluster *k*. Get Distance of each cell
 from cluster k and rescale according to tuning param *sigma*. Sigma is set in
 `RunHarmony`.
 
 ```
-sigma <- 0.1
 distance_matrix <- 2 * (1 - t(hobj$Y) %*% hobj$Z_cos)
+```
+
+Distance to score using sigma tuning param, then rescale to probability:
+
+```
+sigma <- 0.1
 distance_score <- exp(-distance_matrix / sigma)
 R <- apply(distance_score, 2, function(x) x/sum(x))
+rownames(R) <- sprintf('k_%s', 1:nrow(R))
+colnames(R) <- sprintf('cell%04d', 1:ncol(R))
 
 options(scipen=99)
 R[, 1:5] # same:
@@ -136,6 +166,9 @@ k_2       2.8     419.4         0
 k_3       7.8     398.5         0
 k_4     247.7       0.0       405
 k_5     429.3       6.1         0
+
+# Same as 
+round(hobj$O, 1)
 ```
 
 Expected counts: Expected number of cells in each cluster as if there is no
@@ -154,15 +187,8 @@ hobj$E
 ## Built-in clustering
 
 ```
-harmonyObj$max_iter_kmeans <- 10
-harmonyObj$cluster_cpp()
-round(hobj$O, 1)
-     [,1]  [,2] [,3]
-[1,] 158.5   0.0  295
-[2,]   2.8 419.4    0
-[3,]   7.8 398.5    0
-[4,] 247.7   0.0  405
-[5,] 429.3   6.1    0
+hobj$max_iter_kmeans <- 10
+hobj$cluster_cpp()
 ```
 
 ## By hand
@@ -238,7 +264,7 @@ round(hobj$O, 1)
 
 MEMO: Phi is the indicator matrix assigning cells to datasets.
 
-Since *Phi* has 1 when a cell belongs to dataset and 0 otherwise (1-hot
+Since *Phi* has 1 when a cell belongs to a dataset and 0 otherwise (1-hot
 encoding), this multiplication gives to each cell the column in diversity
 corresponoding to thta dataset. E.g. if a cell is from dataset 1, assign to
 that cell the diversity in `diversity[,1]`, if cell is from dataset 2 then
@@ -278,7 +304,9 @@ round(hobj$O, 1)
 * new assignments are based on **distance** and **diversity**
 
 MEMO: The diversity score comes from `exp(-distance)`, note minus sign, so
-higher distance means lower score. I.e.: Higher score means closer.
+higher distance means lower score. I.e.: Higher score means closer and the cell is encouraged to belong to that cluster.
+
+Same for diversity: higher score makes a cluster attractive.
 
 ```
 R_new <- distance_score * diversity_score  
@@ -300,18 +328,37 @@ k_5      0.000  2872367558.04 0.000085
 Because we change the cell-to-cluster assignments (rather, their assignment
 probabilities), we need to update the coordinates of the cluster centroids:
 
+For example, to obtain the new PC1 coordinate of cluster 1 centroid, the matrix multiplication says:
+
+* Take the current PC1 coord of *all* cells
+* For each cell take probability of a cell to belong to cluster 1
+* For each cell multiply its PC1 coord by its prob of belonging to cluster 1. That is, if prob(k=1) is high, this cell contributes more to redifine the cluster centroid
+* Sum all these products to get the new coordinate of cluster 1 as a weighted contribution of each cell. Weight given by the probability of a cell top belong to cluster 1
+
 ```
 Y_unscaled <- hobj$Z_cos %*% t(hobj$R)
+# PC1 coord of cluster 1 is Y_unscaled[1,1] and comes from
+sum(hobj$Z_cos[1,] * hobj$R[1,])
+# PC2 coord of cluster 1 is Y_unscaled[1,2] and comes from
+sum(hobj$Z_cos[2,] * hobj$R[1,])
+# Etc...
+```
+
+Rescale the new coordinates to length 1 (i.e. get back cosine dist):
+
+```
 Y_new <- cosine_normalize(Y_unscaled, 2)
+rownames(Y_new) <- sprintf('PC%02d', 1:nrow(Y_new))
+colnames(Y_new) <- sprintf('k%01d', 1:ncol(Y_new))
 Y_new
-         [,1]    [,2]     [,3]    [,4]    [,5]
- [1,] -0.9362  0.9563  0.88525 -0.9737  0.7020
- [2,]  0.3017  0.1052  0.44127 -0.1291 -0.5944
- [3,] -0.1526  0.2458 -0.02968  0.1717 -0.3855
-    ....
-[18,]  0.0118  0.0025 -0.00631  0.0065  0.0190
-[19,] -0.0044  0.0036 -0.00488  0.0039 -0.0105
-[20,] -0.0283 -0.0231  0.01598  0.0195 -0.0013
+          k1      k2       k3      k4      k5
+PC01 -0.9362  0.9563  0.88525 -0.9737  0.7020
+PC02  0.3017  0.1052  0.44127 -0.1291 -0.5944
+PC03 -0.1526  0.2458 -0.02968  0.1717 -0.3855
+...
+PC18  0.0118  0.0025 -0.00631  0.0065  0.0190
+PC19 -0.0044  0.0036 -0.00488  0.0039 -0.0105
+PC20 -0.0283 -0.0231  0.01598  0.0195 -0.0013
 ```
 
 # Correction
@@ -340,7 +387,7 @@ RSS + lambda * foreach(beta^2)
 The solution via OLS and for ridge, respectively are:
 
 ```
-beta_hat = solve(t(X)* X) * t(X) * y
+beta_hat = solve(t(X) * X) * t(X) * y
 beta_hat = solve(t(X) * X + lambda * I) * t(X) * y
 ```
 
