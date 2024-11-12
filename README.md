@@ -1,9 +1,12 @@
 <!-- vim-markdown-toc GFM -->
 
+* [What and why integrating](#what-and-why-integrating)
+* [Overview](#overview)
 * [Setup](#setup)
     * [Helpers](#helpers)
 * [Data setup](#data-setup)
     * [Initial clustering](#initial-clustering)
+* [Intermezzo: kmeans](#intermezzo-kmeans)
     * [Evaluating initial cluster diversity](#evaluating-initial-cluster-diversity)
 * [Maximum-diversity soft-clustering](#maximum-diversity-soft-clustering)
     * [Built-in clustering](#built-in-clustering)
@@ -12,14 +15,42 @@
 * [Correction](#correction)
     * [Mixture of Experts model](#mixture-of-experts-model)
     * [Cell specific corrections](#cell-specific-corrections)
-* [5.  It is `1 0 1 0` meaning that cell #5 has cell type effect (like all cells,](#5--it-is-1-0-1-0-meaning-that-cell-5-has-cell-type-effect-like-all-cells)
     * [Correction](#correction-1)
 
 <!-- vim-markdown-toc -->
 
 This is a rehash of the excellent [detailed
 walk-through](https://htmlpreview.github.io/?https://github.com/immunogenomics/harmony/blob/master/doc/detailedWalkthrough.html)
-of the harmony integration method. Mostly for my own (dariober) understanding.
+of the harmony integration method. Mostly for my own (dariober) understanding. The original paper is [Fast, sensitive and accurate integration of single-cell data with Harmony](https://www.nature.com/articles/s41592-019-0619-0).
+
+# What and why integrating
+
+Different datasets from the same or similar biological replicates may have
+systematic differences of technical nature. That is, there may be clusters that
+are the biologically the same across datasets, but technical differences
+sepratae them. We would like to merge these datasets to remove this technical
+variation while keeping intact the biological differences.
+
+* **Input**
+    * Cells from multiple dataset embedded in lower dimensional space of gene
+    expression. I.e. a matrix of cells (rows) and top N PCs of gene expression
+    (columns). NB: All cells from all dataset are concatenated and embeded as if they were a single dataset
+    * Metdata assigning each cell to its respective dataset and possibly to other covariates
+
+* **Main tuning parameters**: 
+    * **sigma**: How much weight we want to give to distance of a cell from cluster centroids
+    * **theta**: How much weight we want to give to cluster diversity
+    * **nclust**: Number of clusters to work with (should be more or less the number of real bioloigical clusters)
+    * **lambda**: Shrinkage of dataset coefficients (how heavily we want to correct)
+
+* **Output**: Same cell embedding as input with cell coordinates corrected to remove batch effect(s)
+
+# Method overview
+
+* Cluster cells
+* To each cell give a score for each cluster. This score depends on: How distant is the cell from the cluster centroid and how diverse is the cluster
+* For each dimension (e.g. each principal component) and for each cluster regress the cell coordinate position against a common biological term (intercept) and a dataset specific term. The dataset term has the probability of a cell to belong to that cluster
+* Correct the cell position 
 
 # Setup 
 
@@ -96,6 +127,20 @@ hobj <- RunHarmony(
     lambda=1, # Penalty term for ridge regression. 0: No penalty.
     return_object = TRUE ## return the full Harmony model object
 )
+```
+
+# Intermezzo: kmeans
+
+```
+set.seed(1234)
+x <- rbind(matrix(rnorm(100, sd = 0.3), ncol = 2),
+         matrix(rnorm(100, mean = 1, sd = 0.3), ncol = 2))
+colnames(x) <- c("x", "y")
+cl <- kmeans(x, 2)
+plot(x, col=cl$cluster, pch=19, xlab='gene 1', ylab='gene 2')
+mtext(side=3, adj=0,
+    text=sprintf('Within cluster sum of squares: %s', paste(round(cl$withinss, 1), collapse=', ')))
+points(cl$centers, col = 1:2, pch = 8, cex = 3)
 ```
 
 Using `base::kmeans` we get similar results, but not exactly, depending on the
@@ -368,7 +413,7 @@ groups of cells between batches. Now we make use of these groups in order to
 correct the data in a sensitive way.
 
 For each cell, we estimate how much its batch identity contributes to its PCA
-scores. We then subtract this contribution from that cell’s PCA scores.
+scores. We then subtract this contribution from that cell's PCA scores.
 
 ## Mixture of Experts model
 
@@ -407,11 +452,39 @@ for (k in 1:hobj$K) {
     design <- Phi.moe %*% diag(hobj$R[k, ]) 
     W[[k]] <- solve((design %*% t(Phi.moe)) + lambda) %*% design %*% t(hobj$Z_orig)
 }
+```
 
-# Each item in list W has a table of coefficient for each cluster (so length(W) == 5)
-# Each table has 20 columns, one for each PC dimension and 4 rows: Intercept,
+The design matrix has non-zero coefficient for the biological effect and for the dataset it belongs to:
+
+```
+mat <- t(design)
+colnames(mat) <- c('Biol_effect', sprintf('dataset_%s', 1:(ncol(mat)-1)))
+rownames(mat) <- sprintf('cell_%04d', 1:nrow(mat))
+mat[1:10,]
+          Biol_effect dataset_1 dataset_2 dataset_3
+cell_0001     7.3e-08   7.3e-08   0.0e+00      0.00
+cell_0002     3.2e-01   0.0e+00   0.0e+00      0.32
+cell_0003     7.0e-15   7.0e-15   0.0e+00      0.00
+cell_0004     6.9e-13   6.9e-13   0.0e+00      0.00
+cell_0005     5.2e-12   0.0e+00   5.2e-12      0.00
+cell_0006     7.0e-02   7.0e-02   0.0e+00      0.00
+cell_0007     4.8e-14   4.8e-14   0.0e+00      0.00
+cell_0008     9.8e-01   0.0e+00   0.0e+00      0.98
+cell_0009     6.2e-01   6.2e-01   0.0e+00      0.00
+cell_0010     2.0e-14   2.0e-14   0.0e+00      0.00
+```
+
+So the model for say PC1 should be something like (code runs but is not right):
+
+```
+fit <- lm(hobj$Z_orig[1,] ~ 0 + mat)
+```
+
+Each item in list `W` has a table of coefficient for each cluster (so `length(W) == 5`)
+Each table has 20 columns, one for each PC dimension and 4 rows: Intercept,
 dataset 1, 2, and 3.
 
+```
 W[[1]][, 1:3]
             [,1]        [,2]        [,3] ... [,20]
 [1,] -0.01089167  0.00350216 -0.00205706 ...       < Cell type effect (intercept) to be preserved
@@ -438,7 +511,7 @@ length(Z_1) # 20
 ```
 
 Here `hobj$Phi_moe[, 5]` is and indicator vector of length 4 pertaining to cell
-#5.  It is `1 0 1 0` meaning that cell #5 has cell type effect (like all cells,
+5.  It is `1 0 1 0` meaning that cell #5 has cell type effect (like all cells,
 first 1) and cell #5 belongs to dataset 2 (second 1)
 
 Each cluster contributes and estimate of the cell type and batch (dataset)
