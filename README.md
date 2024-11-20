@@ -1,12 +1,14 @@
 <!-- vim-markdown-toc GFM -->
 
 * [What and why integrating](#what-and-why-integrating)
-* [Overview](#overview)
+* [Method overview](#method-overview)
 * [Setup](#setup)
     * [Helpers](#helpers)
 * [Data setup](#data-setup)
     * [Initial clustering](#initial-clustering)
-* [Intermezzo: kmeans](#intermezzo-kmeans)
+* [Intermezzo](#intermezzo)
+    * [kmeans](#kmeans)
+    * [Regress-out](#regress-out)
     * [Evaluating initial cluster diversity](#evaluating-initial-cluster-diversity)
 * [Maximum-diversity soft-clustering](#maximum-diversity-soft-clustering)
     * [Built-in clustering](#built-in-clustering)
@@ -35,7 +37,7 @@ variation while keeping intact the biological differences.
     * Cells from multiple dataset embedded in lower dimensional space of gene
     expression. I.e. a matrix of cells (rows) and top N PCs of gene expression
     (columns). NB: All cells from all dataset are concatenated and embeded as if they were a single dataset
-    * Metdata assigning each cell to its respective dataset and possibly to other covariates
+    * Metadata assigning each cell to its respective dataset and possibly to other covariates
 
 * **Main tuning parameters**: 
     * **sigma**: How much weight we want to give to distance of a cell from cluster centroids
@@ -63,22 +65,7 @@ mamba install 'r-harmony=1.2.1' r-data.table r-tidyverse r-ggthemes r-ggrepel r-
 ## Helpers
 
 ```
-cosine_normalize <- function(X, margin) {
-    if (margin == 1) {
-        res <- sweep(as.matrix(X), 1, sqrt(rowSums(X ^ 2)), '/')
-        row.names(res) <- row.names(X)
-        colnames(res) <- colnames(X)
-    } else {
-        res <- sweep(as.matrix(X), 2, sqrt(colSums(X ^ 2)), '/')
-        row.names(res) <- row.names(X)
-        colnames(res) <- colnames(X)
-    }
-    return(res)
-}
-
-onehot <- function(vals) {
-    t(model.matrix(~0 + as.factor(vals)))
-}
+source('helpers.R')
 ```
 
 # Data setup
@@ -87,6 +74,7 @@ onehot <- function(vals) {
 library(harmony)
 
 data(cell_lines)
+meta_data <- cell_lines$meta_data
 V <- cell_lines$scaled_pcs
 rownames(V) <- sprintf('cell%04d', 1:nrow(V))
 colnames(V) <- sprintf('PC%02d', 1:ncol(V))
@@ -106,62 +94,51 @@ Map cell to spherical space of radius 1
 V_cos <- cosine_normalize(V, 1)
 stopifnot(sqrt(sum(V_cos[1,]^2)) == 1) # L2 norm is just Pythagorean theorem sqrt(x^2 + y^2 + ...)
 
-meta_data <- cell_lines$meta_data
+
 ```
 
 To get a hang of cosine distance vs euclidean distance see
 (https://stats.stackexchange.com/a/508675/31142)
+
+```
+do_scatter(V, meta_data, 'dataset', no_guides = TRUE, do_labels = TRUE) + 
+    labs(title = 'Colored by dataset', x = 'PC1', y = 'PC2') +
+do_scatter(V, meta_data, 'cell_type', no_guides = TRUE, do_labels = TRUE) + 
+    labs(title = 'Colored by cell type', x = 'PC1', y = 'PC2') +
+NULL
+```
 
 ## Initial clustering
 
 ```
 set.seed(1)
 hobj <- RunHarmony(
-    data_mat = V, ## PCA embedding matrix of cells
-    meta_data = meta_data, ## dataframe with cell labels
-    sigma = 0.1,
-    theta = 1, ## cluster diversity enforcement
-    vars_use = 'dataset', ## variable to integrate out
-    nclust = 5, ## number of clusters in Harmony model
-    max_iter = 0, ## stop after initialization
-    lambda=1, # Penalty term for ridge regression. 0: No penalty.
-    return_object = TRUE ## return the full Harmony model object
+    data_mat = V,          # PCA embedding matrix of cells
+    meta_data = meta_data, # dataframe with cell labels
+    sigma = 0.1,           # Soft clustering: higher -> softer
+    theta = 1,             # cluster diversity enforcement
+    vars_use = 'dataset',  # variable to integrate out
+    nclust = 5,            # number of clusters
+    max_iter = 0,          # stop after initialization
+    lambda=1,              # Penalty term for ridge regression. 0: No penalty.
+    return_object = TRUE
 )
 ```
 
-# Intermezzo: kmeans
-
-```
-set.seed(1234)
-x <- rbind(matrix(rnorm(100, sd = 0.3), ncol = 2),
-         matrix(rnorm(100, mean = 1, sd = 0.3), ncol = 2))
-colnames(x) <- c("x", "y")
-cl <- kmeans(x, 2)
-plot(x, col=cl$cluster, pch=19, xlab='gene 1', ylab='gene 2')
-mtext(side=3, adj=0,
-    text=sprintf('Within cluster sum of squares: %s', paste(round(cl$withinss, 1), collapse=', ')))
-points(cl$centers, col = 1:2, pch = 8, cex = 3)
-```
-
-Using `base::kmeans` we get similar results, but not exactly, depending on the
-seed. Cluster names are arbitrary so they differ.
-
-MEMO: In K-means you first decide the number of clusters you want, then you
-find the cluster centroids that minimise the within cluster sum of squares.
-That is, you assign cells to clusters in such way that the sum of distances
-between cells and the cluster centroid they belong to is smallest.
+If you want to check R kmeans matches harmony's:
 
 ```
 set.seed(1)
 km <- kmeans(t(hobj$Z_cos), 5)
 cluster_centroids <- t(km$centers)
+cluster_centroids <- cosine_normalize(cluster_centroids, 2)
 cor(hobj$Y, cluster_centroids)
           1      2      3      4      5
-[1,]  0.800 -0.646 -0.889  1.000 -0.801
-[2,] -0.895  0.841  0.999 -0.884  0.558
-[3,] -0.906  0.999  0.820 -0.640  0.399
-[4,]  1.000 -0.906 -0.895  0.806 -0.704
-[5,] -0.702  0.395  0.572 -0.802  1.000
+[1,]  1.000 -0.801 -0.895 -0.653  0.800
+[2,] -0.884  0.558  0.998  0.850 -0.895
+[3,] -0.640  0.399  0.810  0.999 -0.906
+[4,]  0.806 -0.704 -0.893 -0.907  1.000
+[5,] -0.802  1.000  0.583  0.394 -0.702
 ```
 
 Probability of each cell to belong to cluster *k*. Get Distance of each cell
@@ -170,6 +147,15 @@ from cluster k and rescale according to tuning param *sigma*. Sigma is set in
 
 ```
 distance_matrix <- 2 * (1 - t(hobj$Y) %*% hobj$Z_cos)
+colnames(distance_matrix) <- sprintf('cell_%04d', 1:ncol(distance_matrix))
+rownames(distance_matrix) <- sprintf('k_%s', 1:nrow(distance_matrix))
+distance_matrix[, 1:10]
+    cell_0001 cell_0002 cell_0003 cell_0004 cell_0005 cell_0006 cell_0007 cell_0008 cell_0009 cell_0010
+k_1       2.4      0.33      3.52      3.22      2.84      0.44      3.44      0.13      0.26      3.41
+k_2       1.8      3.62      0.91      1.07      0.82      3.71      1.09      3.61      3.77      1.17
+k_3       1.5      3.49      1.28      1.10      0.24      3.74      1.61      3.10      3.53      1.46
+k_4       2.8      0.26      3.24      3.35      3.44      0.18      2.98      0.51      0.31      3.05
+k_5       0.8      3.41      0.26      0.42      1.59      3.10      0.38      3.52      3.21      0.26
 ```
 
 Distance to score using sigma tuning param, then rescale to probability:
@@ -186,6 +172,8 @@ R[, 1:5] # same:
 hobj$R[, 1:5]
 options(scipen=0)
 ```
+
+Try to use `sigma = 1` and see how `R` becomes less black-or-white.
 
 ## Evaluating initial cluster diversity
 
@@ -238,31 +226,6 @@ hobj$cluster_cpp()
 
 ## By hand
 
-* Distance of each cell from each cluster centroid
-
-MEMO: Y: coords of centroids; Z_cos: coords of cell in L2 normalised space
-
-```
-distance_matrix <- 2 * (1 - t(hobj$Y) %*% hobj$Z_cos)
-colnames(distance_matrix) <- sprintf('cell_%04d', 1:ncol(distance_matrix))
-rownames(distance_matrix) <- sprintf('k_%s', 1:nrow(distance_matrix))
-
-distance_matrix[, 1:10]
-    cell_0001 cell_0002 cell_0003 cell_0004 cell_0005 cell_0006 cell_0007 cell_0008 cell_0009 cell_0010
-k_1       2.4      0.33      3.52      3.22      2.84      0.44      3.44      0.13      0.26      3.41
-k_2       1.8      3.62      0.91      1.07      0.82      3.71      1.09      3.61      3.77      1.17
-k_3       1.5      3.49      1.28      1.10      0.24      3.74      1.61      3.10      3.53      1.46
-k_4       2.8      0.26      3.24      3.35      3.44      0.18      2.98      0.51      0.31      3.05
-k_5       0.8      3.41      0.26      0.42      1.59      3.10      0.38      3.52      3.21      0.26
-```
-
-* Convert the distance to a score using the tuning param *sigma*
-
-```
-sigma <- 0.1 # also stored in hobj$sigma where this is a 1-column matrix
-distance_score <- exp(-distance_matrix / sigma)
-```
-
 * Diversity score
 
 *theta*: Diversity clustering penalty parameter. theta=0 does not encourage any
@@ -285,7 +248,6 @@ k_3     18.59       0.35   33512710.10
 k_4      0.94 2091631.98          0.48
 k_5      0.36      24.93 2872367558.04
 
-
 round(hobj$O, 1)
      [,1]  [,2] [,3]
 [1,] 158.5   0.0  295
@@ -294,16 +256,6 @@ round(hobj$O, 1)
 [4,] 247.7   0.0  405
 [5,] 429.3   6.1    0
 ```
-
-> Recall that in cluster k=1, batches 1 and 3 were well represented. Below, note
-> that in that cluster (k=1), the penalties for batches 1 and 3 are relatively
-> low (0.98 and 0.47). On the other hand, batch 2 gets a penalty score of 30914.
-> This means that cells from batches 1 and 3 will be encouraged to move into
-> cluster k=1. On the other hand, cluster k=2 is replete with batch 2. The
-> penalty for batch 2 in cluster k=2 is relatively low, and noticeably smaller
-> than the penalty score for batch 2 in cluster k=1. Thus, cells from batch 2
-> will be discouraged from moving into cluster k=1, as this cluster has a higher
-> penalty score for cells from batch 2 compared to other clusters (such as k=1).
 
 ----
 
@@ -354,7 +306,7 @@ higher distance means lower score. I.e.: Higher score means closer and the cell 
 Same for diversity: higher score makes a cluster attractive.
 
 ```
-R_new <- distance_score * diversity_score  
+R_new <- distance_score * diversity_score 
 R_new <- apply(R_new, 2, function(x) x / sum(x))
 
 # Example from this cell:
@@ -425,6 +377,26 @@ We model each PC coordinate with a combination of linear factors.
 
 MEMO: Linear regression minimizes the residual sum of squares (RSS). In ridge regression instead we minimize:
 
+Example of ols vs ridge
+
+```
+library(glmnet)
+library(ggplot2)
+
+y <- mtcars$hp
+x <- cbind(1, wt=mtcars$wt)
+ols <- lm(y ~ x[, c('wt')])
+ridge0 <- coef(glmnet(x, y, alpha=0, lambda=1))
+ridge10 <- coef(glmnet(x, y, alpha=0, lambda=10))
+ridge100 <- coef(glmnet(x, y, alpha=0, lambda=100))
+gg <- ggplot(data=NULL, aes(x=x[,c('wt')], y=y)) +
+    geom_point() +
+    geom_abline(intercept=ols$coefficients[1], slope=ols$coefficients[2], colour='blue') +
+    geom_abline(intercept=ridge0[1,1], slope=ridge0[3,1], colour='red') +
+    geom_abline(intercept=ridge10[1,1], slope=ridge10[3,1], colour='red') +
+    geom_abline(intercept=ridge100[1,1], slope=ridge100[3,1], colour='red')
+```
+
 ```
 RSS + lambda * foreach(beta^2)
 ```
@@ -449,7 +421,7 @@ Phi.moe <- as.matrix(hobj$Phi_moe)
 lambda <- diag(c(hobj$lambda))
 ## Get beta coeeficients for all the clusters
 for (k in 1:hobj$K) {
-    design <- Phi.moe %*% diag(hobj$R[k, ]) 
+    design <- Phi.moe %*% diag(hobj$R[k, ]) # 4x2370 * 2370x2370 = 4x2370
     W[[k]] <- solve((design %*% t(Phi.moe)) + lambda) %*% design %*% t(hobj$Z_orig)
 }
 ```
@@ -534,7 +506,7 @@ for (k in cluster_id) {
 
 Since cell #5 belongs to dataset 2, rows 2 and 4 are all zeros since the effect
 of dataset 1 and 3 don't apply to cell #5. The cumulative correction
-(biological + batch) is the su of these two coefficients. The result ois a
+(biological + batch) is the sum of these two coefficients. The result is a
 vector of length 20 (the number of dimensions to correct):
 
 ```
