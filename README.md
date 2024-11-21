@@ -6,9 +6,6 @@
     * [Helpers](#helpers)
 * [Data setup](#data-setup)
     * [Initial clustering](#initial-clustering)
-* [Intermezzo](#intermezzo)
-    * [kmeans](#kmeans)
-    * [Regress-out](#regress-out)
     * [Evaluating initial cluster diversity](#evaluating-initial-cluster-diversity)
 * [Maximum-diversity soft-clustering](#maximum-diversity-soft-clustering)
     * [Built-in clustering](#built-in-clustering)
@@ -147,6 +144,7 @@ from cluster k and rescale according to tuning param *sigma*. Sigma is set in
 
 ```
 distance_matrix <- 2 * (1 - t(hobj$Y) %*% hobj$Z_cos)
+
 colnames(distance_matrix) <- sprintf('cell_%04d', 1:ncol(distance_matrix))
 rownames(distance_matrix) <- sprintf('k_%s', 1:nrow(distance_matrix))
 cosine_normalize(distance_matrix[, 1:10], 2)
@@ -200,7 +198,7 @@ k_3       7.8     398.5         0
 k_4     247.7       0.0       405
 k_5     429.3       6.1         0
 
-# Same as 
+# Same as
 round(hobj$O, 1)
 ```
 
@@ -309,7 +307,7 @@ higher distance means lower score. I.e.: Higher score means closer and the cell 
 Same for diversity: higher score makes a cluster attractive.
 
 ```
-R_new <- distance_score * diversity_score 
+R_new <- distance_score * diversity_score
 R_new <- apply(R_new, 2, function(x) x / sum(x))
 
 # Example from this cell:
@@ -384,6 +382,8 @@ the normalised, corrected `Z_cos`
 
 
 ```
+hobj$moe_correct_ridge_cpp()
+
 W <- list()
 Phi.moe <- as.matrix(hobj$Phi_moe)
 lambda <- diag(c(hobj$lambda))
@@ -406,7 +406,6 @@ mat <- t(design)
 colnames(mat) <- c('Biol_effect', sprintf('dataset_%s', 1:(ncol(mat)-1)))
 rownames(mat) <- sprintf('cell_%04d', 1:nrow(mat))
 mat[,1] <- 1
-mat[1:10,]
 mat[1:10,]
           Biol_effect dataset_1 dataset_2 dataset_3
 cell_0001           1   1.0e+00   0.0e+00   0.0e+00
