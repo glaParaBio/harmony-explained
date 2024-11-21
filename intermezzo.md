@@ -1,4 +1,11 @@
-# Intermezzo
+
+<!-- vim-markdown-toc GFM -->
+
+* [kmeans](#kmeans)
+* [Regress-out](#regress-out)
+* [OLS vs Ridge](#ols-vs-ridge)
+
+<!-- vim-markdown-toc -->
 
 ## kmeans
 
@@ -72,3 +79,41 @@ gg <- ggplot(data=dat, aes(x=batch, y=corr_gex2, colour=batch)) +
     geom_jitter(width=0.2) +
     ylab('Gene expression')
 ```
+
+## OLS vs Ridge
+
+MEMO: Linear regression minimizes the residual sum of squares (RSS). In ridge regression instead we minimize:
+
+Example of ols vs ridge
+
+```
+library(glmnet)
+library(ggplot2)
+
+y <- mtcars$hp
+x <- cbind(1, wt=mtcars$wt)
+ols <- lm(y ~ x[, c('wt')])
+ridge0 <- coef(glmnet(x, y, alpha=0, lambda=1))
+ridge10 <- coef(glmnet(x, y, alpha=0, lambda=10))
+ridge100 <- coef(glmnet(x, y, alpha=0, lambda=100))
+gg <- ggplot(data=NULL, aes(x=x[,c('wt')], y=y)) +
+    geom_point() +
+    geom_abline(intercept=ols$coefficients[1], slope=ols$coefficients[2], colour='blue') +
+    geom_abline(intercept=ridge0[1,1], slope=ridge0[3,1], colour='red') +
+    geom_abline(intercept=ridge10[1,1], slope=ridge10[3,1], colour='red') +
+    geom_abline(intercept=ridge100[1,1], slope=ridge100[3,1], colour='red')
+```
+
+```
+RSS + lambda * foreach(beta^2)
+```
+
+The solution via OLS and for ridge, respectively are:
+
+```
+beta_hat = solve(t(X) * X) * t(X) * y
+beta_hat = solve(t(X) * X + lambda * I) * t(X) * y
+```
+
+The penalty *lambda* may be assigned for individual coefficient, it doesn't
+have to be the same for all.

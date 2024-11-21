@@ -75,7 +75,7 @@ library(harmony)
 
 data(cell_lines)
 meta_data <- cell_lines$meta_data
-V <- cell_lines$scaled_pcs
+V <- data.frame(cell_lines$scaled_pcs)
 rownames(V) <- sprintf('cell%04d', 1:nrow(V))
 colnames(V) <- sprintf('PC%02d', 1:ncol(V))
 dim(V)
@@ -149,13 +149,13 @@ from cluster k and rescale according to tuning param *sigma*. Sigma is set in
 distance_matrix <- 2 * (1 - t(hobj$Y) %*% hobj$Z_cos)
 colnames(distance_matrix) <- sprintf('cell_%04d', 1:ncol(distance_matrix))
 rownames(distance_matrix) <- sprintf('k_%s', 1:nrow(distance_matrix))
-distance_matrix[, 1:10]
+cosine_normalize(distance_matrix[, 1:10], 2)
     cell_0001 cell_0002 cell_0003 cell_0004 cell_0005 cell_0006 cell_0007 cell_0008 cell_0009 cell_0010
-k_1       2.4      0.33      3.52      3.22      2.84      0.44      3.44      0.13      0.26      3.41
-k_2       1.8      3.62      0.91      1.07      0.82      3.71      1.09      3.61      3.77      1.17
-k_3       1.5      3.49      1.28      1.10      0.24      3.74      1.61      3.10      3.53      1.46
-k_4       2.8      0.26      3.24      3.35      3.44      0.18      2.98      0.51      0.31      3.05
-k_5       0.8      3.41      0.26      0.42      1.59      3.10      0.38      3.52      3.21      0.26
+k_1      0.54     0.054     0.698     0.655      0.59     0.071     0.694     0.022     0.043     0.689
+k_2      0.41     0.594     0.181     0.217      0.17     0.605     0.219     0.607     0.618     0.236
+k_3      0.33     0.574     0.254     0.224      0.05     0.610     0.324     0.522     0.579     0.295
+k_4      0.63     0.042     0.643     0.683      0.71     0.029     0.600     0.085     0.051     0.616
+k_5      0.18     0.559     0.052     0.085      0.33     0.506     0.076     0.593     0.527     0.052
 ```
 
 Distance to score using sigma tuning param, then rescale to probability:
@@ -210,7 +210,10 @@ batch effect at all.
 ```
 dataset_size <- rowSums(as.matrix(hobj$Phi))
 cluster_props <- rowSums(hobj$O) / sum(hobj$O)
-t(matrix(dataset_size, ncol=1) %*% cluster_props)
+expected_counts <- t(matrix(dataset_size, ncol=1) %*% cluster_props)
+colnames(expected_counts) <- sprintf('dataset_%s', 1:ncol(expected_counts))
+rownames(expected_counts) <- sprintf('k_%s', 1:nrow(expected_counts))
+
 # same as
 hobj$E
 ```
@@ -311,8 +314,8 @@ R_new <- apply(R_new, 2, function(x) x / sum(x))
 
 # Example from this cell:
 cell_id <- 2
-round(cbind(dist_score=distance_score[, cell_id], clst_diversity=diversity_score[,cell_id], R_new=R_new[,cell_id]), 6)
-    dist_score clst_diversity    R_new
+round(cbind(dist_score=distance_score[, cell_id], clst_diversity=diversity_score[,cell_id], R_new_scaled=R_new[,cell_id]), 6)
+    dist_score clst_diversity R_new_scaled
 k_1      0.037           0.45 0.312708
 k_2      0.000  1450794326.65 0.000005
 k_3      0.000    33512710.10 0.000000
@@ -322,8 +325,7 @@ k_5      0.000  2872367558.04 0.000085
 
 ## Update cluster centroids
 
-Because we change the cell-to-cluster assignments (rather, their assignment
-probabilities), we need to update the coordinates of the cluster centroids:
+Because we change the cell-to-cluster assignments, we need to update the coordinates of the cluster centroids:
 
 For example, to obtain the new PC1 coordinate of cluster 1 centroid, the matrix multiplication says:
 
@@ -356,6 +358,8 @@ PC03 -0.1526  0.2458 -0.02968  0.1717 -0.3855
 PC18  0.0118  0.0025 -0.00631  0.0065  0.0190
 PC19 -0.0044  0.0036 -0.00488  0.0039 -0.0105
 PC20 -0.0283 -0.0231  0.01598  0.0195 -0.0013
+
+# Compared to hobj$Y from initialised object
 ```
 
 # Correction
@@ -375,42 +379,6 @@ expert and is assigned its own linear model.
 
 We model each PC coordinate with a combination of linear factors.
 
-MEMO: Linear regression minimizes the residual sum of squares (RSS). In ridge regression instead we minimize:
-
-Example of ols vs ridge
-
-```
-library(glmnet)
-library(ggplot2)
-
-y <- mtcars$hp
-x <- cbind(1, wt=mtcars$wt)
-ols <- lm(y ~ x[, c('wt')])
-ridge0 <- coef(glmnet(x, y, alpha=0, lambda=1))
-ridge10 <- coef(glmnet(x, y, alpha=0, lambda=10))
-ridge100 <- coef(glmnet(x, y, alpha=0, lambda=100))
-gg <- ggplot(data=NULL, aes(x=x[,c('wt')], y=y)) +
-    geom_point() +
-    geom_abline(intercept=ols$coefficients[1], slope=ols$coefficients[2], colour='blue') +
-    geom_abline(intercept=ridge0[1,1], slope=ridge0[3,1], colour='red') +
-    geom_abline(intercept=ridge10[1,1], slope=ridge10[3,1], colour='red') +
-    geom_abline(intercept=ridge100[1,1], slope=ridge100[3,1], colour='red')
-```
-
-```
-RSS + lambda * foreach(beta^2)
-```
-
-The solution via OLS and for ridge, respectively are:
-
-```
-beta_hat = solve(t(X) * X) * t(X) * y
-beta_hat = solve(t(X) * X + lambda * I) * t(X) * y
-```
-
-The penalty *lambda* may be assigned for individual coefficient, it doesn't
-have to be the same for all.
-
 Note that we work with `Z_orig`, that is the original PC coordinates, not with
 the normalised, corrected `Z_cos`
 
@@ -422,8 +390,13 @@ lambda <- diag(c(hobj$lambda))
 ## Get beta coeeficients for all the clusters
 for (k in 1:hobj$K) {
     design <- Phi.moe %*% diag(hobj$R[k, ]) # 4x2370 * 2370x2370 = 4x2370
-    W[[k]] <- solve((design %*% t(Phi.moe)) + lambda) %*% design %*% t(hobj$Z_orig)
+    coeffs <- solve((design %*% t(Phi.moe)) + lambda) %*% design %*% t(hobj$Z_orig)
+
+    rownames(coeffs) <- c('Biol_effect', sprintf('dataset_%s', 1:(nrow(coeffs)-1)))
+    colnames(coeffs) <- sprintf('PC%02d', 1:ncol(coeffs))
+    W[[k]] <- coeffs
 }
+names(W) <- sprintf('k_%s', 1:length(W))
 ```
 
 The design matrix has non-zero coefficient for the biological effect and for the dataset it belongs to:
@@ -432,18 +405,20 @@ The design matrix has non-zero coefficient for the biological effect and for the
 mat <- t(design)
 colnames(mat) <- c('Biol_effect', sprintf('dataset_%s', 1:(ncol(mat)-1)))
 rownames(mat) <- sprintf('cell_%04d', 1:nrow(mat))
+mat[,1] <- 1
+mat[1:10,]
 mat[1:10,]
           Biol_effect dataset_1 dataset_2 dataset_3
-cell_0001     7.3e-08   7.3e-08   0.0e+00      0.00
-cell_0002     3.2e-01   0.0e+00   0.0e+00      0.32
-cell_0003     7.0e-15   7.0e-15   0.0e+00      0.00
-cell_0004     6.9e-13   6.9e-13   0.0e+00      0.00
-cell_0005     5.2e-12   0.0e+00   5.2e-12      0.00
-cell_0006     7.0e-02   7.0e-02   0.0e+00      0.00
-cell_0007     4.8e-14   4.8e-14   0.0e+00      0.00
-cell_0008     9.8e-01   0.0e+00   0.0e+00      0.98
-cell_0009     6.2e-01   6.2e-01   0.0e+00      0.00
-cell_0010     2.0e-14   2.0e-14   0.0e+00      0.00
+cell_0001           1   1.0e+00   0.0e+00   0.0e+00
+cell_0002           1   0.0e+00   0.0e+00   3.4e-14
+cell_0003           1   9.9e-01   0.0e+00   0.0e+00
+cell_0004           1   9.9e-01   0.0e+00   0.0e+00
+cell_0005           1   0.0e+00   6.8e-06   0.0e+00
+cell_0006           1   8.7e-14   0.0e+00   0.0e+00
+cell_0007           1   1.0e+00   0.0e+00   0.0e+00
+cell_0008           1   0.0e+00   0.0e+00   5.2e-15
+cell_0009           1   3.4e-14   0.0e+00   0.0e+00
+cell_0010           1   1.0e+00   0.0e+00   0.0e+00
 ```
 
 So the model for say PC1 should be something like (code runs but is not right):
